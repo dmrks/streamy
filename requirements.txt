@@ -4,3 +4,4 @@ plotly
 numpy
 statsmodels
 scipy
+pmdarima
