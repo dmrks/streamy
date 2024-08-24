@@ -1,13 +1,15 @@
+# import libraries
+
 import streamlit as st
 import yfinance as yf
 import plotly.graph_objs as go
-from datetime import date, timedelta
-from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, r2_score
+from datetime import date, datetime, timedelta
 import numpy as np
+from pmdarima import auto_arima
+from statsmodels.tsa.stattools import adfuller
 
-# Helper function to format large numbers
+
+# Helper functions
 def human_format(num):
     if num is None:
         return "N/A"
@@ -17,164 +19,156 @@ def human_format(num):
         num /= 1000.0
     return f'{num:.1f}{" KMBT"[magnitude]}'
 
-# Function to train a linear regression model
-def train_regression_model(hist):
-    # Extracting features (days since start)
-    days_since_start = np.array(range(len(hist))).reshape(-1, 1)
-    prices = hist['Close'].values.reshape(-1, 1)
 
-    # Splitting data into training and testing sets
-    X_train, X_test, y_train, y_test = train_test_split(days_since_start, prices, test_size=0.2, random_state=42)
+# Check Stationarity
+def check_stationarity(data):
+    result = adfuller(data)
+    return result[1] < 0.05  # p-value < 0.05 means data is stationary
 
-    # Training the model
-    model = LinearRegression()
-    model.fit(X_train, y_train)
 
-    # Predicting on test set
-    y_pred = model.predict(X_test)
+# Function to difference the data to make it stationary
+def difference_data(data):
+    return np.diff(data)
 
-    # Evaluating model performance
-    mse = mean_squared_error(y_test, y_pred)
-    r2 = r2_score(y_test, y_pred)
 
-    return model, mse, r2
+# Function to fit the ARIMA model with auto-tuning parameters
+def fit_auto_arima_model(hist, periods):
+    prices = hist['Close'].values
 
-# Function to calculate Discounted Cash Flow (DCF) valuation
+    # Ensure the data is stationary
+    if not check_stationarity(prices):
+        prices = difference_data(prices)
+
+    # Find the best (p, d, q)
+    try:
+        model = auto_arima(prices, seasonal=False, stepwise=True, trace=False, suppress_warnings=True)
+
+        # Fit the model with the best found parameters
+        forecast = model.predict(n_periods=periods)  # Predict future periods
+
+        # Adjust forecast to account for differencing (if applicable)
+        if len(hist) > 1:
+            forecast = np.cumsum(forecast) + hist['Close'].iloc[-1]
+
+        return forecast, model
+    except Exception as e:
+        st.sidebar.error(f"ARIMA model failed to predict: {e}")
+        return np.full(periods, hist['Close'].iloc[-1]), None  # Fallback to a flat forecast if ARIMA fails
+
+
+#  Discounted Cash Flow (DCF)
 def calculate_dcf(stock_data, growth_rate, discount_rate):
-    # Fetch relevant financial metrics
     eps = stock_data.info.get('trailingEps', 0)
-
-    # Estimate future cash flows (here, using EPS growth)
     future_cash_flows = []
     for i in range(1, 6):
-        future_cash_flows.append(eps * (1 + growth_rate)**i)
-
-    # Calculate terminal value using Gordon Growth Model (also known as perpetuity growth method)
-    terminal_value = (eps * (1 + growth_rate)**6) / (discount_rate - growth_rate)
-
-    # Discount all cash flows to present value
+        future_cash_flows.append(eps * (1 + growth_rate) ** i)
+    terminal_value = (eps * (1 + growth_rate) ** 6) / (discount_rate - growth_rate)
     dcf_value = 0
     for i, cash_flow in enumerate(future_cash_flows):
-        dcf_value += cash_flow / (1 + discount_rate)**(i + 1)
-    dcf_value += terminal_value / (1 + discount_rate)**5
-
+        dcf_value += cash_flow / (1 + discount_rate) ** (i + 1)
+    dcf_value += terminal_value / (1 + discount_rate) ** 5
     return dcf_value
 
-# Set up the Streamlit interface
-st.title("Stock Chart Viewer with DCF Valuation")
-st.write("Enter a ticker symbol and select parameters to view the stock chart and valuation using a Discounted Cash Flow (DCF) model.")
 
-# Input for the ticker symbol
-ticker = st.text_input("Ticker symbol", "AAPL")
+# Streamlit interface
+st.title("Stock-Price Predicition and Valuation")
+st.write("Enter your ticker symbol and select the growth rate for DCF Valuation")
 
-# Date range input for the time frame
-date_range = st.date_input(
-    "Select date range",
-    value=[date(2020, 1, 1), date.today()],
-    min_value=date(2000, 1, 1),
-    max_value=date.today()
-)
+# Input for the ticker symbol (Default set to NVDA)
+ticker = st.text_input("Ticker symbol", "NVDA")
 
-# Growth rate and discount rate inputs
-growth_rate = st.number_input("Growth Rate (%)", min_value=0.0, max_value=100.0, value=5.0, step=0.1)
-discount_rate = st.number_input("Discount Rate (%)", min_value=0.0, max_value=100.0, value=10.0, step=0.1)
+# Select growth rate
+growth_rate = st.slider("Growth Rate (%)", min_value=-20.0, max_value=20.0, value=5.0) / 100
 
-# Ensure the date range contains exactly two dates
-if len(date_range) == 2:
-    start_date, end_date = date_range
+# Fixed discount rate
+discount_rate = 0.10
 
-    # Fetch data from Yahoo Finance
-    if ticker:
-        stock_data = yf.Ticker(ticker)
-        hist = stock_data.history(start=start_date, end=end_date)
+# Use YTD data
+start_date = datetime(datetime.now().year, 1, 1)
+end_date = datetime.combine(date.today(), datetime.min.time())
 
-        # Sidebar for stock info and additional metrics
-        st.sidebar.title("Stock Information and Metrics")
-        st.sidebar.write(f"**Ticker:** {ticker}")
-        st.sidebar.write(f"**Name:** {stock_data.info.get('longName', 'N/A')}")
-        st.sidebar.write(f"**Sector:** {stock_data.info.get('sector', 'N/A')}")
-        st.sidebar.write(f"**Industry:** {stock_data.info.get('industry', 'N/A')}")
-        st.sidebar.write(f"**Market Cap:** {human_format(stock_data.info.get('marketCap'))}")
-        st.sidebar.write(f"**Dividend Yield:** {stock_data.info.get('dividendYield', 0) * 100:.2f}%")
-        st.sidebar.write(f"**Previous Close:** ${stock_data.info.get('previousClose', 'N/A')}")
-        st.sidebar.write(f"**Open:** ${stock_data.info.get('open', 'N/A')}")
-        st.sidebar.write(f"**52 Week High:** ${stock_data.info.get('fiftyTwoWeekHigh', 'N/A')}")
-        st.sidebar.write(f"**52 Week Low:** ${stock_data.info.get('fiftyTwoWeekLow', 'N/A')}")
+# Shorter prediction horizon = 30 days
+prediction_horizon = 30
 
-        # Calculate DCF valuation and current stock price
-        if not hist.empty:
-            dcf_value = calculate_dcf(stock_data, growth_rate / 100, discount_rate / 100)
-            st.sidebar.write(f"**DCF Valuation:** ${dcf_value:.2f}")
+# Fetch data from Yahoo Finance
+if ticker:
+    stock_data = yf.Ticker(ticker)
+    hist = stock_data.history(start=start_date, end=end_date)
 
-            current_price = hist['Close'][-1]
-            dcf_percent_diff = ((dcf_value - current_price) / current_price) * 100
+    # Sidebar for stock info and additional metrics
+    st.sidebar.title("Stock-Metrics")
+    st.sidebar.write(f"**Ticker:** {ticker}")
+    st.sidebar.write(f"**Name:** {stock_data.info.get('longName', 'N/A')}")
+    st.sidebar.write(f"**Sector:** {stock_data.info.get('sector', 'N/A')}")
+    st.sidebar.write(f"**Industry:** {stock_data.info.get('industry', 'N/A')}")
+    st.sidebar.write(f"**Market Cap:** {human_format(stock_data.info.get('marketCap'))}")
+    st.sidebar.write(f"**Dividend Yield:** {stock_data.info.get('dividendYield', 0) * 100:.2f}%")
+    st.sidebar.write(f"**Previous Close:** ${stock_data.info.get('previousClose', 'N/A')}")
+    st.sidebar.write(f"**Open:** ${stock_data.info.get('open', 'N/A')}")
+    st.sidebar.write(f"**52 Week High:** ${stock_data.info.get('fiftyTwoWeekHigh', 'N/A')}")
+    st.sidebar.write(f"**52 Week Low:** ${stock_data.info.get('fiftyTwoWeekLow', 'N/A')}")
 
-            if dcf_percent_diff >= 0:
-                st.sidebar.markdown(f"**Undervalued by:** <span style='color: green;'>{abs(dcf_percent_diff):.2f}%</span>", unsafe_allow_html=True)
-            else:
-                st.sidebar.markdown(f"**Overvalued by:** <span style='color: red;'>{abs(dcf_percent_diff):.2f}%</span>", unsafe_allow_html=True)
+    st.sidebar.write(f"**Selected Growth Rate:** {growth_rate * 100:.2f}%")
+    st.sidebar.write(f"**Fixed Discount Rate:** {discount_rate * 100:.2f}%")
 
-        # Train regression model and predict future prices
-        model, mse, r2 = train_regression_model(hist)
+    # Calculate DCF valuation and current stock price
+    if not hist.empty:
+        dcf_value = calculate_dcf(stock_data, growth_rate, discount_rate)
+        st.sidebar.write(f"**DCF Valuation:** ${dcf_value:.2f}")
 
-        # Display regression model performance
-        st.sidebar.subheader("Regression Model Performance")
-        st.sidebar.write(f"**Mean Squared Error (MSE):** {mse:.2f}")
-        st.sidebar.write(f"**R^2 Score:** {r2:.2f}")
+        current_price = hist['Close'][-1]
+        dcf_percent_diff = ((dcf_value - current_price) / current_price) * 100
 
-        # Calculate and display stock metrics
-        if not hist.empty:
-            start_price = hist['Close'][0]
-            end_price = hist['Close'][-1]
-            stock_return = ((end_price - start_price) / start_price) * 100
-            pe_ratio = stock_data.info.get('forwardPE', 'N/A')
-            next_dividend_date = stock_data.info.get('dividendDate', 'N/A')
+        if dcf_percent_diff >= 0:
+            st.sidebar.markdown(f"**Undervalued by:** <span style='color: green;'>{abs(dcf_percent_diff):.2f}%</span>",
+                                unsafe_allow_html=True)
+        else:
+            st.sidebar.markdown(f"**Overvalued by:** <span style='color: red;'>{abs(dcf_percent_diff):.2f}%</span>",
+                                unsafe_allow_html=True)
 
-            st.sidebar.subheader("Stock Metrics")
-            st.sidebar.write(f"**Stock Return:** {stock_return:.2f}%")
-            st.sidebar.write(f"**P/E Ratio:** {pe_ratio}")
-            st.sidebar.write(f"**Next Dividend Date:** {next_dividend_date}")
+    # Fit ARIMA model and predict next 30 days
+    forecast, arima_model = fit_auto_arima_model(hist, prediction_horizon)
 
-        # Create the Plotly figure
-        fig = go.Figure()
+    if arima_model:
+        # evaluation metrics
+        arima_aic = arima_model.aic()
+        arima_bic = arima_model.bic()
+        final_forecast_price = forecast[-1]
 
-        # Add the historical data
-        fig.add_trace(go.Scatter(x=hist.index, y=hist['Close'], mode='lines', name='Close Price'))
+        st.sidebar.subheader("ARIMA Model Performance")
+        st.sidebar.write(f"**Predicted Price after 30 Days:** ${final_forecast_price:.2f}")
+        st.sidebar.write(f"**AIC:** {arima_aic:.2f}")
+        st.sidebar.write(f"**BIC:** {arima_bic:.2f}")
 
-        # Predict future prices for the next 30 days
-        future_dates = [end_date + timedelta(days=i) for i in range(1, 31)]
-        future_days = np.array(range(len(hist), len(hist) + 30)).reshape(-1, 1)
-        future_predictions = model.predict(future_days)
+        # Calculate the percentage difference between ARIMA predicted price and the current price
+        arima_percent_diff = ((final_forecast_price - current_price) / current_price) * 100
 
-        # Add future predictions to the plot
-        fig.add_trace(go.Scatter(x=future_dates, y=future_predictions.flatten(), mode='lines', name='Predicted Price', line=dict(dash='dash')))
+        if arima_percent_diff >= 0:
+            st.sidebar.markdown(
+                f"**Price Increase in 30 Days:** <span style='color: green;'>{abs(arima_percent_diff):.2f}%</span>",
+                unsafe_allow_html=True)
+        else:
+            st.sidebar.markdown(
+                f"**Price Decrease in 30 Days:** <span style='color: red;'>{abs(arima_percent_diff):.2f}%</span>",
+                unsafe_allow_html=True)
 
-        # Update layout
-        fig.update_layout(
-            title=f'{ticker} Stock Price with Predicted Prices',
-            xaxis_title='Date',
-            yaxis_title='Close Price (USD)',
-            template='plotly_dark'  # You can change the template to your preference
-        )
+    # Create figure
+    fig = go.Figure()
 
-        # Display the plot in Streamlit
-        st.plotly_chart(fig)
+    # Add historical data
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['Close'], mode='lines', name='Close Price'))
 
-        # Debt vs. Equity Mosaic Chart
-        debt = stock_data.info.get('totalDebt', 0)
-        equity = stock_data.info.get('totalStockholderEquity', 0)
-        if debt and equity:
-            fig_mosaic = go.Figure(
-                data=[go.Pie(labels=['Debt', 'Equity'], values=[debt, equity], hole=0.4)]
-            )
-            fig_mosaic.update_layout(
-                title_text='Debt vs. Equity',
-                annotations=[dict(text='Debt vs. Equity', x=0.5, y=0.5, font_size=20, showarrow=False)]
-            )
-            st.plotly_chart(fig_mosaic)
+    # Add ARIMA prediction in graph
+    future_dates = [end_date + timedelta(days=i) for i in range(1, prediction_horizon + 1)]
+    fig.add_trace(go.Scatter(x=future_dates, y=forecast, mode='lines', name='Predicted Price', line=dict(dash='dash')))
 
-    else:
-        st.write("No data available for the selected time frame or ticker symbol.")
+    # Update layout
+    fig.update_layout(
+        title=f'{ticker} Stock Price (YTD) with 30-Day Prediction',
+        xaxis_title='Date',
+        yaxis_title='Close Price (USD)',
+        template='plotly_dark'
+    )
 
-else:
-    st.write("Please select a valid date range.")
+    # Displayin Streamlit
+    st.plotly_chart(fig)
