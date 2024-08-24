@@ -1,5 +1,4 @@
 # import libraries
-
 import streamlit as st
 import yfinance as yf
 import plotly.graph_objs as go
@@ -7,7 +6,6 @@ from datetime import date, datetime, timedelta
 import numpy as np
 from pmdarima import auto_arima
 from statsmodels.tsa.stattools import adfuller
-
 
 # Helper functions
 def human_format(num):
@@ -19,17 +17,14 @@ def human_format(num):
         num /= 1000.0
     return f'{num:.1f}{" KMBT"[magnitude]}'
 
-
 # Check Stationarity
 def check_stationarity(data):
     result = adfuller(data)
     return result[1] < 0.05  # p-value < 0.05 means data is stationary
 
-
 # Function to difference the data to make it stationary
 def difference_data(data):
     return np.diff(data)
-
 
 # Function to fit the ARIMA model with auto-tuning parameters
 def fit_auto_arima_model(hist, periods):
@@ -55,7 +50,6 @@ def fit_auto_arima_model(hist, periods):
         st.sidebar.error(f"ARIMA model failed to predict: {e}")
         return np.full(periods, hist['Close'].iloc[-1]), None  # Fallback to a flat forecast if ARIMA fails
 
-
 #  Discounted Cash Flow (DCF)
 def calculate_dcf(stock_data, growth_rate, discount_rate):
     eps = stock_data.info.get('trailingEps', 0)
@@ -69,9 +63,8 @@ def calculate_dcf(stock_data, growth_rate, discount_rate):
     dcf_value += terminal_value / (1 + discount_rate) ** 5
     return dcf_value
 
-
 # Streamlit interface
-st.title("Stock-Price Predicition and Valuation")
+st.title("Stock-Price Prediction and Valuation")
 st.write("Enter your ticker symbol and select the growth rate for DCF Valuation")
 
 # Input for the ticker symbol (Default set to NVDA)
@@ -170,5 +163,5 @@ if ticker:
         template='plotly_dark'
     )
 
-    # Displayin Streamlit
+    # Display
     st.plotly_chart(fig)
