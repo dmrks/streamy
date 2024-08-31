@@ -4,7 +4,7 @@ import yfinance as yf
 import plotly.graph_objs as go
 from datetime import date, datetime, timedelta
 import numpy as np
-from statsmodels.tsa.arima.model import ARIMA
+from pmdarima import auto_arima
 from statsmodels.tsa.stattools import adfuller
 
 # Helper functions
@@ -26,8 +26,8 @@ def check_stationarity(data):
 def difference_data(data):
     return np.diff(data)
 
-# Function to fit the ARIMA model
-def fit_arima_model(hist, periods):
+# Function to fit the ARIMA model with auto-tuning parameters
+def fit_auto_arima_model(hist, periods):
     prices = hist['Close'].values
 
     # Ensure the data is stationary
@@ -35,17 +35,17 @@ def fit_arima_model(hist, periods):
         prices = difference_data(prices)
 
     try:
-        model = ARIMA(prices, order=(5, 1, 0))  # Adjust the order as needed
-        model_fit = model.fit()
+        # Use auto_arima to find the best (p, d, q) parameters
+        model = auto_arima(prices, seasonal=False, stepwise=True, suppress_warnings=True, trace=True)
 
-        # Predict future periods
-        forecast = model_fit.forecast(steps=periods)
+        # Fit the model with the best found parameters
+        forecast = model.predict(n_periods=periods)  # Predict future periods
 
         # Adjust forecast to account for differencing (if applicable)
         if len(hist) > 1:
             forecast = np.cumsum(forecast) + hist['Close'].iloc[-1]
 
-        return forecast, model_fit
+        return forecast, model
     except Exception as e:
         st.sidebar.error(f"ARIMA model failed to predict: {e}")
         return np.full(periods, hist['Close'].iloc[-1]), None  # Fallback to a flat forecast if ARIMA fails
@@ -120,12 +120,12 @@ if ticker:
                                 unsafe_allow_html=True)
 
     # Fit ARIMA model and predict next 30 days
-    forecast, arima_model = fit_arima_model(hist, prediction_horizon)
+    forecast, arima_model = fit_auto_arima_model(hist, prediction_horizon)
 
     if arima_model:
         # Evaluation metrics
-        arima_aic = arima_model.aic
-        arima_bic = arima_model.bic
+        arima_aic = arima_model.aic()
+        arima_bic = arima_model.bic()
         final_forecast_price = forecast[-1]
 
         st.sidebar.subheader("ARIMA Model Performance")
