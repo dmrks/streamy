@@ -1,4 +1,4 @@
-# import libraries
+x# import libraries
 import streamlit as st
 import yfinance as yf
 import plotly.graph_objs as go
@@ -26,7 +26,7 @@ def check_stationarity(data):
 def difference_data(data):
     return np.diff(data)
 
-# Function to fit the ARIMA model
+# Function to fit the ARIMA model with manually set parameters
 def fit_arima_model(hist, periods):
     prices = hist['Close'].values
 
@@ -35,6 +35,7 @@ def fit_arima_model(hist, periods):
         prices = difference_data(prices)
 
     try:
+        # Manually setting ARIMA parameters (e.g., p=5, d=1, q=0)
         model = ARIMA(prices, order=(5, 1, 0))  # Adjust the order as needed
         model_fit = model.fit()
 
@@ -52,11 +53,18 @@ def fit_arima_model(hist, periods):
 
 # Discounted Cash Flow (DCF)
 def calculate_dcf(stock_data, growth_rate, discount_rate):
+    # Begrenzung der Wachstumsrate auf ein realistisches Intervall
+    growth_rate = max(min(growth_rate, 0.15), 0.02)  # z.B. 2% bis 15%
+
     eps = stock_data.info.get('trailingEps', 0)
     future_cash_flows = []
     for i in range(1, 6):
         future_cash_flows.append(eps * (1 + growth_rate) ** i)
-    terminal_value = (eps * (1 + growth_rate) ** 6) / (discount_rate - growth_rate)
+    
+    # Terminal Growth Rate festlegen, z.B. 2.5%
+    terminal_growth_rate = 0.025
+    terminal_value = (eps * (1 + terminal_growth_rate) ** 6) / (discount_rate - terminal_growth_rate)
+    
     dcf_value = 0
     for i, cash_flow in enumerate(future_cash_flows):
         dcf_value += cash_flow / (1 + discount_rate) ** (i + 1)
@@ -166,5 +174,3 @@ if ticker:
     # Display in Streamlit
     st.plotly_chart(fig)
 
-    # Display in Streamlit
-    st.plotly_chart(fig)
